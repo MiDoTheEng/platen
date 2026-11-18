@@ -82,7 +82,23 @@ public class TypewriterView extends View {
 
     // --- layout (monospaced grid)
     private int[] lineOf = new int[0], colOf = new int[0];
-    private int cursorLine, cursorCol, cols = 30;
+    private int cursorLine, cursorCol, cols = 30;   // end of the text
+    private int caretLine, caretCol;                // where the next letter goes
+    private float lastBase0, lastTextL;
+    private int pendIns, pendRem;
+    private char pendLast;
+    private int arrowHeld = 0;
+    private long caretMovedAt = 0;
+    private boolean arrowRepeated;
+    private final Runnable repeater = new Runnable() {
+        @Override
+        public void run() {
+            if (arrowHeld == 0) return;
+            arrowRepeated = true;
+            moveCaret(arrowHeld);
+            postDelayed(this, 60);
+        }
+    };
     private float charW, fontPx, lineH, marginX, paperW;
 
     // --- animation state
@@ -112,7 +128,8 @@ public class TypewriterView extends View {
     private final RectF r = new RectF();
     private final Path path = new Path();
     private final RectF backHit = new RectF(), shareHit = new RectF();
-    private final RectF[] toolHits = {new RectF(), new RectF(), new RectF(), new RectF(), new RectF()};
+    private final RectF[] toolHits = {new RectF(), new RectF(), new RectF(), new RectF(),
+            new RectF(), new RectF(), new RectF()};
     private final NumberFormat nf = NumberFormat.getIntegerInstance();
 
     public TypewriterView(Context c, Sounds sounds, SharedPreferences prefs, Typeface face, Host host) {
@@ -158,7 +175,7 @@ public class TypewriterView extends View {
         text.setSpan(watcher, 0, text.length(), Spanned.SPAN_INCLUSIVE_INCLUSIVE);
         Selection.setSelection(text, text.length());
         relayout();
-        animLine = cursorLine;
+        animLine = caretLine;
         headX = -1;
         scrollBack = 0;
         if (imm != null) imm.restartInput(this);
@@ -193,11 +210,6 @@ public class TypewriterView extends View {
         grainPaint.getShader().setLocalMatrix(grainMatrix);
         c.drawRect(0, 0, paperW, contentH, grainPaint);
         drawLetters(c, marginX, top + fontPx * 0.8f, -1e9f, 1e9f, 0, false);
-        label.setColor(INK);
-        label.setAlpha(90);
-        label.setTextSize(9 * dp);
-        label.setTextAlign(Paint.Align.RIGHT);
-        c.drawText("typed on Platen", paperW - marginX, contentH - 20 * dp, label);
         return b;
     }
 
@@ -235,29 +247,129 @@ public class TypewriterView extends View {
 
         @Override
         public boolean setSelection(int start, int end) {
-            // A typewriter only types at the end of the page.
-            int n = text.length();
-            return super.setSelection(n, n);
+            boolean ok = super.setSelection(start, end);
+            post(TypewriterView.this::onCaretMoved);
+            return ok;
+        }
+    }
+
+    private int selStart() {
+        int s = Selection.getSelectionStart(text);
+        return s < 0 ? text.length() : Math.min(s, text.length());
+    }
+
+    private int caret() {
+        int e = Selection.getSelectionEnd(text);
+        return e < 0 ? text.length() : Math.min(e, text.length());
+    }
+
+    /** Types at the cursor, replacing any selected text. */
+    private void typeAtCaret(String s) {
+        int a = Math.min(selStart(), caret()), b = Math.max(selStart(), caret());
+        text.replace(a, b, s);
+        int p = Math.min(a + s.length(), text.length());
+        Selection.setSelection(text, p);
+        onCaretMoved();
+    }
+
+    private void onCaretMoved() {
+        caretMovedAt = System.currentTimeMillis();
+        updateCaret();
+        scrollReturn = true;
+        reportSelection();
+        invalidate();
+    }
+
+    /** dir: -1 left, +1 right, -2 up, +2 down. */
+    private void moveCaret(int dir) {
+        int n = text.length();
+        int p = caret();
+        if (dir == -1) {
+            if (p > 0) p -= Character.charCount(Character.codePointBefore(text, p));
+        } else if (dir == 1) {
+            if (p < n) p += Character.charCount(Character.codePointAt(text, p));
+        } else {
+            int target = caretLine + (dir > 0 ? 1 : -1);
+            if (target < 0) p = 0;
+            else if (target > cursorLine) p = n;
+            else p = indexAt(target, caretCol);
+        }
+        Selection.setSelection(text, p);
+        onCaretMoved();
+    }
+
+    /** The cursor position on a line nearest to (at or before) a column. */
+    private int indexAt(int line, int col) {
+        int n = text.length();
+        int best = -1, bestCol = -1;
+        for (int p = 0; p <= n; p++) {
+            if (p < n && Character.isLowSurrogate(text.charAt(p))) continue;
+            int L = p < n ? lineOf[p] : cursorLine;
+            int C = p < n ? colOf[p] : cursorCol;
+            if (L == line && C <= col && C > bestCol) {
+                best = p;
+                bestCol = C;
+            }
+            if (L > line) break;
+        }
+        return best < 0 ? caret() : best;
+    }
+
+    private void updateCaret() {
+        int p = caret();
+        if (p < text.length() && p < lineOf.length) {
+            caretLine = lineOf[p];
+            caretCol = colOf[p];
+        } else {
+            caretLine = cursorLine;
+            caretCol = cursorCol;
         }
     }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent e) {
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                moveCaret(-1);
+                return true;
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                moveCaret(1);
+                return true;
+            case KeyEvent.KEYCODE_DPAD_UP:
+                moveCaret(-2);
+                return true;
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                moveCaret(2);
+                return true;
+            case KeyEvent.KEYCODE_MOVE_HOME:
+                Selection.setSelection(text, indexAt(caretLine, 0));
+                onCaretMoved();
+                return true;
+            case KeyEvent.KEYCODE_MOVE_END:
+                Selection.setSelection(text, indexAt(caretLine, Integer.MAX_VALUE));
+                onCaretMoved();
+                return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_DEL) {
-            int n = text.length();
-            if (n > 0) {
-                int cp = Character.codePointBefore(text, n);
-                text.delete(n - Character.charCount(cp), n);
-            }
+            int a = Math.min(selStart(), caret()), b = Math.max(selStart(), caret());
+            if (a != b) text.delete(a, b);
+            else if (b > 0) text.delete(b - Character.charCount(Character.codePointBefore(text, b)), b);
+            onCaretMoved();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_FORWARD_DEL) {
+            int p = caret();
+            if (p < text.length()) text.delete(p, p + Character.charCount(Character.codePointAt(text, p)));
+            onCaretMoved();
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
-            text.append('\n');
+            typeAtCaret("\n");
             return true;
         }
         int u = e.getUnicodeChar(e.getMetaState());
         if (u > 0 && !Character.isISOControl(u)) {
-            text.append(new String(Character.toChars(u)));
+            typeAtCaret(new String(Character.toChars(u)));
             return true;
         }
         return super.onKeyDown(keyCode, e);
@@ -283,15 +395,15 @@ public class TypewriterView extends View {
             for (int i = 0; i < before - p && from < stamps.size(); i++) stamps.remove(from);
             long now = System.currentTimeMillis();
             for (int i = p; i < count; i++) stamps.add(start + i, makeStamp(start + i, s.charAt(start + i), now));
-            onEdit(count - p, before - p, count > p ? s.charAt(start + count - 1) : 0);
+            pendIns = count - p;
+            pendRem = before - p;
+            pendLast = count > p ? s.charAt(start + count - 1) : 0;
+            relayout();
         }
 
         @Override
         public void afterTextChanged(Editable s) {
-            int n = s.length();
-            if (Selection.getSelectionEnd(s) != n || Selection.getSelectionStart(s) != n) {
-                Selection.setSelection(s, n);
-            }
+            onEdit(pendIns, pendRem, pendLast);
             post(TypewriterView.this::reportSelection);
             host.onTextChanged(s.toString());
         }
@@ -299,15 +411,15 @@ public class TypewriterView extends View {
 
     private void reportSelection() {
         if (imm == null) return;
-        int n = text.length();
-        imm.updateSelection(this, n, n,
+        imm.updateSelection(this, selStart(), caret(),
                 BaseInputConnection.getComposingSpanStart(text),
                 BaseInputConnection.getComposingSpanEnd(text));
     }
 
     private void onEdit(int inserted, int removed, char last) {
-        int prevLine = cursorLine;
-        relayout();
+        int prevLine = caretLine;
+        caretMovedAt = System.currentTimeMillis();
+        updateCaret();
         scrollReturn = true;
         if (inserted > 0) {
             lastBorn = System.currentTimeMillis();
@@ -320,17 +432,17 @@ public class TypewriterView extends View {
                     if (last == ' ') sounds.space();
                     else sounds.key();
                 }
-                if (cursorLine != prevLine && sound) sounds.carriageReturn();
+                if (caretLine != prevLine && sound) sounds.carriageReturn();
             }
-            if (cursorCol >= cols - 6 && cursorCol < cols && bellLine != cursorLine && last != '\n') {
-                bellLine = cursorLine;
+            if (caretCol >= cols - 6 && caretCol < cols && bellLine != caretLine && last != '\n') {
+                bellLine = caretLine;
                 if (sound) sounds.bell();
             }
             if (text.length() >= LIMIT) showToast("Page full · 3,000 characters");
         } else if (removed > 0) {
             if (sound) sounds.back();
         }
-        if (bellLine > cursorLine) bellLine = -1;
+        if (bellLine > caretLine) bellLine = -1;
         invalidate();
     }
 
@@ -357,7 +469,7 @@ public class TypewriterView extends View {
     protected void onSizeChanged(int w, int h, int ow, int oh) {
         super.onSizeChanged(w, h, ow, oh);
         computeCols(w);
-        animLine = cursorLine;
+        animLine = caretLine;
         headX = -1;
     }
 
@@ -417,6 +529,7 @@ public class TypewriterView extends View {
         }
         cursorLine = cur;
         cursorCol = col;
+        updateCaret();
     }
 
     // ================================================================ stamps
@@ -451,14 +564,14 @@ public class TypewriterView extends View {
         boolean anim = false;
 
         // --- animation steps
-        float dl = cursorLine - animLine;
+        float dl = caretLine - animLine;
         if (Math.abs(dl) > 0.003f) {
             animLine += dl * 0.22f;
             anim = true;
-        } else animLine = cursorLine;
+        } else animLine = caretLine;
         if (scrollReturn && !dragging) {
             scrollBack *= 0.72f;
-            if (scrollBack < 0.5f) {
+            if (Math.abs(scrollBack) < 0.5f) {
                 scrollBack = 0;
                 scrollReturn = false;
             } else anim = true;
@@ -471,8 +584,10 @@ public class TypewriterView extends View {
         final float paperL = (w - paperW) / 2f;
         final float textL = paperL + marginX;
         final float base0 = barY - 16 * dp - animLine * lineH + scrollBack;
+        lastBase0 = base0;
+        lastTextL = textL;
 
-        int col = Math.min(cursorCol, cols);
+        int col = Math.min(caretCol, cols);
         float targetX = textL + col * charW + charW / 2f;
         if (headX < 0) headX = targetX;
         float dx = targetX - headX;
@@ -515,8 +630,17 @@ public class TypewriterView extends View {
             anim |= drawLetters(c, textL, base0, topH - lineH, h + lineH, now, true);
         }
 
+        // --- cursor: a blinking underline under the cell where the next letter lands
+        float baseCur = base0 + caretLine * lineH;
+        boolean blinkOn = ((now - caretMovedAt) / 530) % 2 == 0;
+        if (blinkOn) {
+            fill.setShader(null);
+            fill.setColor(0xFFB0475F);
+            float cx0 = textL + Math.min(caretCol, cols) * charW;
+            c.drawRect(cx0 + 1 * dp, baseCur + 3 * dp, cx0 + charW - 1 * dp, baseCur + 4.6f * dp, fill);
+        }
+
         // --- type bar (the little "T" that strikes)
-        float baseCur = base0 + cursorLine * lineH;
         long st = now - strikeAt;
         float e = st < 60 ? st / 60f : st < 180 ? 1f - (st - 60) / 120f : 0f;
         if (st < 200) anim = true;
@@ -587,6 +711,7 @@ public class TypewriterView extends View {
         }
 
         if (anim) postInvalidateOnAnimation();
+        else postInvalidateDelayed(530 - (now - caretMovedAt) % 530);
     }
 
     /** Draws the letters; returns true while any of them is still being stamped. */
@@ -648,12 +773,12 @@ public class TypewriterView extends View {
 
     private void drawLamp(Canvas c, int w, int h, float barY, float pw) {
         float reach = Math.max(barY * 0.95f, 220 * dp);
-        float half = Math.max(pw * 0.44f, 120 * dp);
+        float half = Math.max(pw * 0.95f, w * 0.8f);   // a wide beam (about 100 degrees)
         path.reset();
-        path.moveTo(headX - 12 * dp, barY);
+        path.moveTo(headX - 14 * dp, barY);
         path.lineTo(headX - half, barY - reach);
         path.lineTo(headX + half, barY - reach);
-        path.lineTo(headX + 12 * dp, barY);
+        path.lineTo(headX + 14 * dp, barY);
         path.close();
 
         int layer = c.saveLayer(0, 0, w, h, null);
@@ -709,21 +834,31 @@ public class TypewriterView extends View {
     }
 
     private void drawTools(Canvas c, int w, float toolTop) {
-        float pillW = Math.min(w - 32 * dp, 300 * dp);
+        float pillW = Math.min(w - 24 * dp, 360 * dp);
         float l = (w - pillW) / 2f;
         r.set(l, toolTop + 12 * dp, l + pillW, toolTop + 56 * dp);
         fill.setShader(null);
         fill.setColor(lamp ? 0xFF241F22 : 0xFFE9DCE0);
         c.drawRoundRect(r, 22 * dp, 22 * dp, fill);
         float cy = r.centerY();
-        float step = pillW / 5f;
+        float step = pillW / 7f;
         int on = lamp ? 0xFFFFC27A : 0xFF2A2427;
         int off = lamp ? 0xFF7B7276 : 0xFF9C8E93;
         stroke.setShader(null);
         stroke.setStrokeWidth(1.8f * dp);
-        for (int i = 0; i < 5; i++) {
-            float cx = l + step * i + step / 2f;
-            toolHits[i].set(cx - step / 2f, r.top - 6 * dp, cx + step / 2f, r.bottom + 6 * dp);
+        for (int slot = 0; slot < 7; slot++) {
+            float cx = l + step * slot + step / 2f;
+            toolHits[slot].set(cx - step / 2f, r.top - 6 * dp, cx + step / 2f, r.bottom + 6 * dp);
+            if (slot == 0 || slot == 6) { // cursor arrows
+                float d = slot == 0 ? -1 : 1;
+                stroke.setColor(arrowHeld == (slot == 0 ? -1 : 1) ? (lamp ? 0xFFFFE2B8 : 0xFF000000) : on);
+                stroke.setStrokeWidth(2.2f * dp);
+                c.drawLine(cx + 3 * dp * d, cy - 7 * dp, cx - 3 * dp * d, cy, stroke);
+                c.drawLine(cx - 3 * dp * d, cy, cx + 3 * dp * d, cy + 7 * dp, stroke);
+                stroke.setStrokeWidth(1.8f * dp);
+                continue;
+            }
+            int i = slot - 1;
             switch (i) {
                 case 0: // lamp
                     stroke.setColor(lamp ? on : off);
@@ -800,21 +935,36 @@ public class TypewriterView extends View {
                 dragStart = scrollBack;
                 dragging = false;
                 scrollReturn = false;
+                arrowRepeated = false;
+                if (toolHits[0].contains(downX, downY) || toolHits[6].contains(downX, downY)) {
+                    arrowHeld = toolHits[0].contains(downX, downY) ? -1 : 1;
+                    performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                    moveCaret(arrowHeld);
+                    postDelayed(repeater, 380);
+                }
                 return true;
             case MotionEvent.ACTION_MOVE:
                 float dy = e.getY() - downY;
+                if (arrowHeld != 0) return true;
                 if (!dragging && Math.abs(dy) > touchSlop) dragging = true;
                 if (dragging) {
-                    float max = cursorLine * lineH;
-                    scrollBack = Math.max(0, Math.min(max, dragStart + dy));
+                    float max = caretLine * lineH;
+                    float min = -(cursorLine - caretLine) * lineH;
+                    scrollBack = Math.max(min, Math.min(max, dragStart + dy));
                     invalidate();
                 }
                 return true;
             case MotionEvent.ACTION_UP:
-                if (!dragging) tap(e.getX(), e.getY());
+                if (arrowHeld != 0) {
+                    arrowHeld = 0;
+                    removeCallbacks(repeater);
+                    invalidate();
+                } else if (!dragging) tap(e.getX(), e.getY());
                 dragging = false;
                 return true;
             case MotionEvent.ACTION_CANCEL:
+                arrowHeld = 0;
+                removeCallbacks(repeater);
                 dragging = false;
                 return true;
         }
@@ -830,11 +980,19 @@ public class TypewriterView extends View {
             host.onShare();
             return;
         }
-        for (int i = 0; i < toolHits.length; i++) {
+        for (int i = 1; i <= 5; i++) {
             if (toolHits[i].contains(x, y)) {
-                tool(i);
+                tool(i - 1);
                 return;
             }
+        }
+        // a tap on the typed text puts the cursor there
+        if (text.length() > 0 && y > backHit.bottom && y < toolHits[1].top) {
+            int line = (int) Math.floor((y - (lastBase0 - fontPx * 1.1f)) / lineH);
+            line = Math.max(0, Math.min(cursorLine, line));
+            int col = Math.max(0, Math.round((x - lastTextL) / charW));
+            Selection.setSelection(text, indexAt(line, col));
+            onCaretMoved();
         }
         showKeyboard();
     }
@@ -862,7 +1020,7 @@ public class TypewriterView extends View {
                 sizeIdx = (sizeIdx + 1) % SIZES.length;
                 ed.putInt("size", sizeIdx);
                 applySize();
-                animLine = cursorLine;
+                animLine = caretLine;
                 headX = -1;
                 showToast(SIZE_NAMES[sizeIdx]);
                 break;
