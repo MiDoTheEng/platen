@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.platen.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.platen.app'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    // A fixed key kept in the project, so every new build installs over the previous one.
+    signingConfigs {
+        platen {
+            storeFile file('platen.keystore')
+            storePassword 'platenkey'
+            keyAlias 'platen'
+            keyPassword 'platenkey'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.platen
+        }
+        release {
+            signingConfig signingConfigs.platen
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
