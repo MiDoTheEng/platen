@@ -27,6 +27,8 @@ public class HomeView extends FrameLayout {
         void create();
 
         void delete(Store.Note n);
+
+        void clearAll();
     }
 
     private static final int INK = 0xFF231E21;
@@ -52,7 +54,29 @@ public class HomeView extends FrameLayout {
         title.setTextSize(30);
         title.setLetterSpacing(0.25f);
         title.setTextColor(paper);
-        col.addView(title);
+
+        LinearLayout head = new LinearLayout(c);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.addView(title, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
+        if (!notes.isEmpty()) {
+            TextView clear = new TextView(c);
+            clear.setTypeface(face);
+            clear.setTextSize(12.5f);
+            clear.setTextColor(0xFFE59AA8);
+            clear.setText("Clear all");
+            clear.setGravity(Gravity.CENTER);
+            int hp = (int) (14 * dp), vp = (int) (8 * dp);
+            clear.setPadding(hp, vp, hp, vp);
+            GradientDrawable cbg = new GradientDrawable();
+            cbg.setColor(0x00000000);
+            cbg.setStroke((int) Math.max(1, dp), 0x66E59AA8);
+            cbg.setCornerRadius(18 * dp);
+            clear.setBackground(cbg);
+            clear.setOnClickListener(v -> host.clearAll());
+            head.addView(clear);
+        }
+        col.addView(head);
 
         TextView sub = new TextView(c);
         sub.setTypeface(face);

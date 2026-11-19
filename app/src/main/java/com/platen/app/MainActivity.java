@@ -95,6 +95,19 @@ public class MainActivity extends Activity implements TypewriterView.Host {
             }
 
             @Override
+            public void clearAll() {
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Clear all pages?")
+                        .setMessage("Every page will be deleted. This can't be undone.")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Clear all", (d, w) -> {
+                            for (Store.Note n : store.all()) store.delete(n);
+                            showHome();
+                        })
+                        .show();
+            }
+
+            @Override
             public void delete(Store.Note n) {
                 new AlertDialog.Builder(MainActivity.this)
                         .setTitle("Delete this page?")
