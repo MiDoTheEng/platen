@@ -240,8 +240,40 @@ public class TypewriterView extends View {
         grainMatrix.reset();
         grainPaint.getShader().setLocalMatrix(grainMatrix);
         c.drawRect(0, 0, paperW, contentH, grainPaint);
-        drawLetters(c, marginX, top + fontPx * 0.8f, -1e9f, 1e9f, 0, false);
+        float base0 = top + fontPx * 0.8f;
+        drawLetters(c, marginX, base0, -1e9f, 1e9f, 0, false);
+        if (lamp) drawLampOnImage(c, base0, contentH);
         return b;
+    }
+
+    /** Lamp mode in a shared image: the bar and carriage under the last line, lit from there. */
+    private void drawLampOnImage(Canvas c, float base0, float contentH) {
+        float barY = Math.min(contentH - 14 * dp, base0 + cursorLine * lineH + 18 * dp);
+        pos(text.length());
+        float hx = marginX + posX + (posRtl ? -charW / 2f : charW / 2f);
+        float savedHead = headX;
+        headX = hx;
+        int W = (int) Math.ceil(paperW), H = (int) Math.ceil(contentH);
+
+        float bt = 4.5f * dp;
+        fill.setShader(new LinearGradient(0, barY - bt, 0, barY + bt,
+                new int[]{0xFF4A464E, 0xFF1A181C, 0xFF0B0A0C, 0xFF2C2A30},
+                new float[]{0f, 0.45f, 0.7f, 1f}, Shader.TileMode.CLAMP));
+        r.set(0, barY - bt, paperW, barY + bt);
+        c.drawRect(r, fill);
+        fill.setShader(null);
+        r.set(hx - 25 * dp, barY - 10 * dp, hx + 25 * dp, barY + 10 * dp);
+        fill.setColor(0xFF2B2629);
+        c.drawRoundRect(r, 10 * dp, 10 * dp, fill);
+        int[] dots = {0xFFFFB347, 0xFFFF6B4A, 0xFFFFB347};
+        for (int i = 0; i < 3; i++) {
+            fill.setColor(dots[i]);
+            c.drawCircle(hx - 12 * dp + i * 6 * dp, barY, 1.9f * dp, fill);
+        }
+
+        // reach a little past the top so the first lines of a long page are still readable
+        drawLamp(c, W, H, barY, paperW, Math.max(barY * 1.25f, 260 * dp));
+        headX = savedHead;
     }
 
     // ================================================================ keyboard input
@@ -913,7 +945,10 @@ public class TypewriterView extends View {
     }
 
     private void drawLamp(Canvas c, int w, int h, float barY, float pw) {
-        float reach = Math.max(barY * 0.95f, 220 * dp);
+        drawLamp(c, w, h, barY, pw, Math.max(barY * 0.95f, 220 * dp));
+    }
+
+    private void drawLamp(Canvas c, int w, int h, float barY, float pw, float reach) {
         float half = Math.max(pw * 0.95f, w * 0.8f);   // a wide beam (about 100 degrees)
         path.reset();
         path.moveTo(headX - 14 * dp, barY);
