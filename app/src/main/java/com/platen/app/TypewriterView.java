@@ -21,9 +21,13 @@ import android.os.Build;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
+import android.text.Layout;
+import android.text.StaticLayout;
+import android.text.TextDirectionHeuristics;
 import android.text.Selection;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
+import android.text.TextPaint;
 import android.text.TextWatcher;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
@@ -35,7 +39,9 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import android.view.inputmethod.InputMethodSubtype;
 
+import java.text.Bidi;
 import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.Random;
@@ -81,9 +87,27 @@ public class TypewriterView extends View {
     private final Watcher watcher = new Watcher();
 
     // --- layout (monospaced grid)
-    private int[] lineOf = new int[0], colOf = new int[0];
-    private int cursorLine, cursorCol, cols = 30;   // end of the text
-    private int caretLine, caretCol;                // where the next letter goes
+    // Each character's line, left edge, width and direction. Lines may run left-to-right or
+    // right-to-left (Arabic); Arabic words are drawn as whole runs so their letters stay joined.
+    private int[] lineOf = new int[0];
+    private float[] xOf = new float[0], wOf = new float[0], tmpW = new float[64];
+    private boolean[] rtlOf = new boolean[0], lineRtl = new boolean[4];
+    private final ArrayList<Run> runs = new ArrayList<>();
+    private int cursorLine, cols = 30;      // last line of the text
+    private float textW;
+    private int caretLine;                  // where the next letter goes
+    private float caretX;
+    private boolean caretRtl;
+    private boolean kbRtl;                  // the keyboard is set to a right-to-left language
+    private long kbCheckedAt;
+    private int posLine;
+    private float posX;
+    private boolean posRtl;
+
+    private static final class Run {
+        int s, e, line;
+        float x;
+    }
     private float lastBase0, lastTextL;
     private int pendIns, pendRem;
     private char pendLast;
@@ -118,7 +142,7 @@ public class TypewriterView extends View {
     private boolean kbShown;
 
     // --- paints and shapes
-    private final Paint ink = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+    private final TextPaint ink = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint label = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -142,6 +166,7 @@ public class TypewriterView extends View {
         sp = dp * getResources().getConfiguration().fontScale;
         imm = (InputMethodManager) c.getSystemService(Context.INPUT_METHOD_SERVICE);
         touchSlop = ViewConfiguration.get(c).getScaledTouchSlop();
+        kbRtl = detectKbRtl();
 
         lamp = prefs.getBoolean("lamp", false);
         sound = prefs.getBoolean("sound", true);
@@ -284,45 +309,86 @@ public class TypewriterView extends View {
     private void moveCaret(int dir) {
         int n = text.length();
         int p = caret();
-        if (dir == -1) {
-            if (p > 0) p -= Character.charCount(Character.codePointBefore(text, p));
-        } else if (dir == 1) {
-            if (p < n) p += Character.charCount(Character.codePointAt(text, p));
+        if (dir == -1 || dir == 1) {
+            // arrows move on screen: in a right-to-left line, the right arrow goes back
+            int logical = (dir == 1) != caretRtl ? 1 : -1;
+            if (logical < 0) {
+                if (p > 0) p -= Character.charCount(Character.codePointBefore(text, p));
+            } else {
+                if (p < n) p += Character.charCount(Character.codePointAt(text, p));
+            }
         } else {
             int target = caretLine + (dir > 0 ? 1 : -1);
             if (target < 0) p = 0;
             else if (target > cursorLine) p = n;
-            else p = indexAt(target, caretCol);
+            else p = indexAtX(target, caretX);
         }
         Selection.setSelection(text, p);
         onCaretMoved();
     }
 
-    /** The cursor position on a line nearest to (at or before) a column. */
-    private int indexAt(int line, int col) {
+    /** The cursor position on a line closest to an x position. */
+    private int indexAtX(int line, float x) {
         int n = text.length();
-        int best = -1, bestCol = -1;
+        int best = -1;
+        float bestD = Float.MAX_VALUE;
         for (int p = 0; p <= n; p++) {
             if (p < n && Character.isLowSurrogate(text.charAt(p))) continue;
-            int L = p < n ? lineOf[p] : cursorLine;
-            int C = p < n ? colOf[p] : cursorCol;
-            if (L == line && C <= col && C > bestCol) {
+            pos(p);
+            if (posLine != line) continue;
+            float d = Math.abs(posX - x);
+            if (d < bestD) {
+                bestD = d;
                 best = p;
-                bestCol = C;
             }
-            if (L > line) break;
         }
         return best < 0 ? caret() : best;
     }
 
-    private void updateCaret() {
-        int p = caret();
-        if (p < text.length() && p < lineOf.length) {
-            caretLine = lineOf[p];
-            caretCol = colOf[p];
+    /** Where a cursor at index p sits: line, x, and which way the next letter goes. */
+    private void pos(int p) {
+        int n = text.length();
+        boolean atBreak = p >= n || text.charAt(p) == '\n';
+        int prev = -1;
+        if (p > 0) {
+            int q = p - Character.charCount(Character.codePointBefore(text, p));
+            if (text.charAt(q) != '\n') prev = q;
+        }
+        if (prev >= 0 && (atBreak || lineOf[prev] == lineOf[p])) {
+            posLine = lineOf[prev];
+            posRtl = rtlOf[prev];
+            posX = posRtl ? xOf[prev] : xOf[prev] + wOf[prev];
+        } else if (!atBreak) {
+            posLine = lineOf[p];
+            posRtl = rtlOf[p];
+            posX = posRtl ? xOf[p] + wOf[p] : xOf[p];
         } else {
-            caretLine = cursorLine;
-            caretCol = cursorCol;
+            posLine = p < n ? lineOf[p] : cursorLine;
+            posRtl = posLine < lineRtl.length && lineRtl[posLine];
+            posX = posRtl ? textW : 0;
+        }
+    }
+
+    private void updateCaret() {
+        pos(caret());
+        caretLine = posLine;
+        caretX = posX;
+        caretRtl = posRtl;
+    }
+
+    private boolean detectKbRtl() {
+        try {
+            if (imm == null) return false;
+            InputMethodSubtype st = imm.getCurrentInputMethodSubtype();
+            if (st == null) return false;
+            String tag = st.getLanguageTag();
+            if (tag == null || tag.isEmpty()) tag = st.getLocale();
+            if (tag == null) return false;
+            tag = tag.toLowerCase(java.util.Locale.ROOT);
+            return tag.startsWith("ar") || tag.startsWith("fa") || tag.startsWith("ur")
+                    || tag.startsWith("he") || tag.startsWith("iw") || tag.startsWith("ps") || tag.startsWith("ckb");
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -342,11 +408,11 @@ public class TypewriterView extends View {
                 moveCaret(2);
                 return true;
             case KeyEvent.KEYCODE_MOVE_HOME:
-                Selection.setSelection(text, indexAt(caretLine, 0));
+                Selection.setSelection(text, indexAtX(caretLine, lineRtl[caretLine] ? textW : 0));
                 onCaretMoved();
                 return true;
             case KeyEvent.KEYCODE_MOVE_END:
-                Selection.setSelection(text, indexAt(caretLine, Integer.MAX_VALUE));
+                Selection.setSelection(text, indexAtX(caretLine, lineRtl[caretLine] ? 0 : textW));
                 onCaretMoved();
                 return true;
         }
@@ -434,7 +500,8 @@ public class TypewriterView extends View {
                 }
                 if (caretLine != prevLine && sound) sounds.carriageReturn();
             }
-            if (caretCol >= cols - 6 && caretCol < cols && bellLine != caretLine && last != '\n') {
+            float room = caretRtl ? caretX : textW - caretX;
+            if (room < 6 * charW && room > 0.5f * charW && bellLine != caretLine && last != '\n') {
                 bellLine = caretLine;
                 if (sound) sounds.bell();
             }
@@ -473,62 +540,99 @@ public class TypewriterView extends View {
         headX = -1;
     }
 
-    /** Word-wrapped monospaced layout: the line and column of every character. */
+    /**
+     * Lays the text out: line breaks from a StaticLayout, then each line split into
+     * left-to-right and right-to-left runs (java.text.Bidi) and placed on the page.
+     * A paragraph's direction comes from its first letter; an empty one follows the keyboard.
+     */
     private void relayout() {
-        int n = text.length();
+        String s = text.toString();
+        int n = s.length();
         if (lineOf.length < n + 1) {
-            lineOf = new int[n + 64];
-            colOf = new int[n + 64];
+            int cap = n + 64;
+            lineOf = new int[cap];
+            xOf = new float[cap];
+            wOf = new float[cap];
+            rtlOf = new boolean[cap];
         }
-        int cur = 0, col = 0, lineStart = 0, lastSpace = -1;
-        for (int i = 0; i < n; i++) {
-            char c = text.charAt(i);
-            if (c == '\n') {
-                lineOf[i] = cur;
-                colOf[i] = col;
-                cur++;
-                col = 0;
-                lineStart = i + 1;
-                lastSpace = -1;
-                continue;
+        runs.clear();
+        textW = cols * charW;
+        StaticLayout lay = StaticLayout.Builder.obtain(s, 0, n, ink, Math.max(1, (int) Math.ceil(textW)))
+                .setTextDirection(kbRtl ? TextDirectionHeuristics.FIRSTSTRONG_RTL : TextDirectionHeuristics.FIRSTSTRONG_LTR)
+                .setIncludePad(false)
+                .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+                .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
+                .build();
+        int lines = lay.getLineCount();
+        if (lineRtl.length < lines) lineRtl = new boolean[lines + 16];
+        for (int L = 0; L < lines; L++) {
+            int ls = lay.getLineStart(L), le = lay.getLineEnd(L);
+            int ce = le;
+            if (ce > ls && s.charAt(ce - 1) == '\n') ce--;
+            boolean prtl = lay.getParagraphDirection(L) == Layout.DIR_RIGHT_TO_LEFT;
+            lineRtl[L] = prtl;
+            for (int i = ls; i < le; i++) {
+                lineOf[i] = L;
+                xOf[i] = prtl ? textW : 0;
+                wOf[i] = 0;
+                rtlOf[i] = prtl;
             }
-            if (Character.isLowSurrogate(c) && i > 0) { // second half of an emoji: same cell
-                lineOf[i] = lineOf[i - 1];
-                colOf[i] = colOf[i - 1];
-                continue;
+            if (ce <= ls) continue;
+            Bidi bidi = new Bidi(s.substring(ls, ce), prtl ? Bidi.DIRECTION_RIGHT_TO_LEFT : Bidi.DIRECTION_LEFT_TO_RIGHT);
+            int rc = bidi.getRunCount();
+            byte[] levels = new byte[rc];
+            Integer[] order = new Integer[rc];
+            for (int k = 0; k < rc; k++) {
+                levels[k] = (byte) bidi.getRunLevel(k);
+                order[k] = k;
             }
-            if (col >= cols) {
-                if (c == ' ') {
-                    lineOf[i] = cur;
-                    colOf[i] = col;
-                    cur++;
-                    col = 0;
-                    lineStart = i + 1;
-                    lastSpace = -1;
-                    continue;
-                } else if (lastSpace >= lineStart) {
-                    cur++;
-                    int c0 = 0;
-                    for (int j = lastSpace + 1; j < i; j++) {
-                        lineOf[j] = cur;
-                        colOf[j] = Character.isLowSurrogate(text.charAt(j)) ? Math.max(0, c0 - 1) : c0++;
+            Bidi.reorderVisually(levels, 0, order, 0, rc);
+            float x = 0;
+            int firstRun = runs.size();
+            for (int v = 0; v < rc; v++) {
+                int k = order[v];
+                int rs = ls + bidi.getRunStart(k), re = ls + bidi.getRunLimit(k);
+                boolean rtl = (bidi.getRunLevel(k) & 1) == 1;
+                if (!rtl) {
+                    if (tmpW.length < re - rs) tmpW = new float[re - rs + 32];
+                    ink.getTextWidths(s, rs, re, tmpW);
+                    for (int i = rs; i < re; i++) {
+                        xOf[i] = x;
+                        wOf[i] = tmpW[i - rs];
+                        rtlOf[i] = false;
+                        x += tmpW[i - rs];
                     }
-                    col = c0;
-                    lineStart = lastSpace + 1;
-                    lastSpace = -1;
                 } else {
-                    cur++;
-                    col = 0;
-                    lineStart = i;
+                    float rw = ink.getRunAdvance(s, rs, re, rs, re, true, re);
+                    for (int i = rs; i < re; i++) {
+                        rtlOf[i] = true;
+                        if (i > rs && Character.isLowSurrogate(s.charAt(i))) {
+                            xOf[i] = xOf[i - 1];
+                            wOf[i] = 0;
+                            continue;
+                        }
+                        int j = (Character.isHighSurrogate(s.charAt(i)) && i + 1 < re) ? i + 2 : i + 1;
+                        float a0 = ink.getRunAdvance(s, rs, re, rs, re, true, i);
+                        float a1 = ink.getRunAdvance(s, rs, re, rs, re, true, j);
+                        xOf[i] = x + rw - a1;
+                        wOf[i] = a1 - a0;
+                    }
+                    Run run = new Run();
+                    run.s = rs;
+                    run.e = re;
+                    run.line = L;
+                    run.x = x;
+                    runs.add(run);
+                    x += rw;
                 }
             }
-            lineOf[i] = cur;
-            colOf[i] = col;
-            if (c == ' ') lastSpace = i;
-            col++;
+            if (prtl) { // right-to-left lines sit against the right margin
+                float off = textW - x;
+                for (int i = ls; i < ce; i++) xOf[i] += off;
+                for (int q = firstRun; q < runs.size(); q++) runs.get(q).x += off;
+            }
         }
-        cursorLine = cur;
-        cursorCol = col;
+        cursorLine = lines - 1;
         updateCaret();
     }
 
@@ -587,8 +691,15 @@ public class TypewriterView extends View {
         lastBase0 = base0;
         lastTextL = textL;
 
-        int col = Math.min(caretCol, cols);
-        float targetX = textL + col * charW + charW / 2f;
+        if (now - kbCheckedAt > 600) {
+            kbCheckedAt = now;
+            boolean k = detectKbRtl();
+            if (k != kbRtl) {
+                kbRtl = k;
+                relayout();
+            }
+        }
+        float targetX = textL + caretX + (caretRtl ? -charW / 2f : charW / 2f);
         if (headX < 0) headX = targetX;
         float dx = targetX - headX;
         if (Math.abs(dx) > 0.3f) {
@@ -625,7 +736,13 @@ public class TypewriterView extends View {
         // --- the typed letters
         if (text.length() == 0) {
             ink.setAlpha(80);
-            c.drawText("Begin here.", textL, base0, ink);
+            if (kbRtl) {
+                ink.setTextAlign(Paint.Align.RIGHT);
+                c.drawText("ابدأ هنا.", textL + textW, base0, ink);
+                ink.setTextAlign(Paint.Align.LEFT);
+            } else {
+                c.drawText("Begin here.", textL, base0, ink);
+            }
         } else {
             anim |= drawLetters(c, textL, base0, topH - lineH, h + lineH, now, true);
         }
@@ -636,7 +753,7 @@ public class TypewriterView extends View {
         if (blinkOn) {
             fill.setShader(null);
             fill.setColor(0xFFB0475F);
-            float cx0 = textL + Math.min(caretCol, cols) * charW;
+            float cx0 = textL + (caretRtl ? caretX - charW : caretX);
             c.drawRect(cx0 + 1 * dp, baseCur + 3 * dp, cx0 + charW - 1 * dp, baseCur + 4.6f * dp, fill);
         }
 
@@ -719,14 +836,17 @@ public class TypewriterView extends View {
         boolean animating = false;
         int n = text.length();
         if (Build.VERSION.SDK_INT >= 28 || !live) ink.setShadowLayer(0.7f * dp, 0, 0, 0x55231E21);
+        ink.setColor(INK);
+        // left-to-right letters, each stamped on its own
         for (int i = 0; i < n; i++) {
             char ch = text.charAt(i);
-            if (ch == '\n' || ch == ' ' || Character.isLowSurrogate(ch)) continue;
+            if (ch == '\n' || ch == ' ' || Character.isLowSurrogate(ch) || rtlOf[i]) continue;
             float y = base0 + lineOf[i] * lineH;
             if (y < minY || y > maxY) continue;
             int end = (Character.isHighSurrogate(ch) && i + 1 < n) ? i + 2 : i + 1;
             Stamp s = i < stamps.size() ? stamps.get(i) : null;
-            float x = left + colOf[i] * charW;
+            float cw = wOf[i] > 0 ? wOf[i] : charW;
+            float x = left + xOf[i];
             float k = 1f;
             if (live && s != null && s.born > 0) {
                 long age = now - s.born;
@@ -739,18 +859,33 @@ public class TypewriterView extends View {
             float alpha = s == null ? 1f : s.alpha;
             int a = (int) (255 * alpha * (0.3f + 0.7f * k));
             c.save();
-            c.translate(x + charW / 2f + (s == null ? 0 : s.dx), y + (s == null ? 0 : s.dy));
+            c.translate(x + cw / 2f + (s == null ? 0 : s.dx), y + (s == null ? 0 : s.dy));
             if (s != null) c.rotate(s.rot);
             if (scale != 1f) c.scale(scale, scale);
-            ink.setColor(INK);
             ink.setAlpha(a);
-            c.drawText(text, i, end, -charW / 2f, 0, ink);
+            c.drawText(text, i, end, -cw / 2f, 0, ink);
             if (s != null && s.dbl) {
                 ink.setAlpha(a / 3);
-                c.drawText(text, i, end, -charW / 2f + 0.7f * dp, 0.25f * dp, ink);
+                c.drawText(text, i, end, -cw / 2f + 0.7f * dp, 0.25f * dp, ink);
             }
             c.restore();
             if (s != null && s.splat && k >= 1f) drawSplat(c, x, y, s.seed);
+        }
+        // right-to-left (Arabic) runs, drawn whole so the letters join
+        for (Run run : runs) {
+            float y = base0 + run.line * lineH;
+            if (y < minY || y > maxY) continue;
+            long newest = 0;
+            for (int j = run.s; j < run.e && j < stamps.size(); j++) newest = Math.max(newest, stamps.get(j).born);
+            float k = 1f;
+            if (live && newest > 0 && now - newest < 170) {
+                k = (now - newest) / 170f;
+                animating = true;
+            }
+            Stamp s0 = run.s < stamps.size() ? stamps.get(run.s) : null;
+            float alpha = s0 == null ? 1f : 0.85f + 0.15f * s0.alpha;
+            ink.setAlpha((int) (255 * alpha * (0.6f + 0.4f * k)));
+            c.drawTextRun(text, run.s, run.e, run.s, run.e, left + run.x, y + (s0 == null ? 0 : s0.dy * 0.5f), true, ink);
         }
         ink.clearShadowLayer();
         ink.setAlpha(255);
@@ -990,8 +1125,7 @@ public class TypewriterView extends View {
         if (text.length() > 0 && y > backHit.bottom && y < toolHits[1].top) {
             int line = (int) Math.floor((y - (lastBase0 - fontPx * 1.1f)) / lineH);
             line = Math.max(0, Math.min(cursorLine, line));
-            int col = Math.max(0, Math.round((x - lastTextL) / charW));
-            Selection.setSelection(text, indexAt(line, col));
+            Selection.setSelection(text, indexAtX(line, x - lastTextL));
             onCaretMoved();
         }
         showKeyboard();
