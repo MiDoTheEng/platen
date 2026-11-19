@@ -26,7 +26,7 @@ public class MainActivity extends Activity implements TypewriterView.Host {
     private Store store;
     private Sounds sounds;
     private SharedPreferences prefs;
-    private Typeface face;
+    private Typeface[] faces;
     private TypewriterView editor;
     private Store.Note current;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -38,31 +38,43 @@ public class MainActivity extends Activity implements TypewriterView.Host {
         store = new Store(this);
         prefs = getSharedPreferences("platen", MODE_PRIVATE);
         sounds = new Sounds(this);
-        face = loadFace();
+        faces = loadFaces();
         showHome();
     }
 
     /**
-     * Courier 10 Pitch for Latin letters, with Amiri Typewriter (an Arabic typewriter face,
-     * SIL Open Font License) as the fallback for Arabic.
+     * Courier 10 Pitch for Latin letters, with an Arabic face as the fallback for Arabic:
+     * Amiri, Aref Ruqaa or Amiri Typewriter (all SIL Open Font License).
      */
-    private Typeface loadFace() {
-        if (Build.VERSION.SDK_INT >= 29) {
-            try {
-                Font courier = new Font.Builder(getAssets(), "fonts/courier10.otf").build();
-                Font arabic = new Font.Builder(getAssets(), "fonts/amiri_typewriter.ttf").build();
-                return new Typeface.CustomFallbackBuilder(new FontFamily.Builder(courier).build())
-                        .addCustomFallback(new FontFamily.Builder(arabic).build())
-                        .setSystemFallback("monospace")
-                        .build();
-            } catch (Exception ignored) {
+    private Typeface[] loadFaces() {
+        String[] files = TypewriterView.ARABIC_FONT_FILES;
+        Typeface[] out = new Typeface[files.length];
+        Typeface plain;
+        try {
+            plain = Typeface.createFromAsset(getAssets(), "fonts/courier10.otf");
+        } catch (Exception e) {
+            plain = Typeface.MONOSPACE;
+        }
+        for (int k = 0; k < files.length; k++) {
+            out[k] = plain;
+            if (Build.VERSION.SDK_INT >= 29) {
+                try {
+                    Font courier = new Font.Builder(getAssets(), "fonts/courier10.otf").build();
+                    Font arabic = new Font.Builder(getAssets(), "fonts/" + files[k]).build();
+                    out[k] = new Typeface.CustomFallbackBuilder(new FontFamily.Builder(courier).build())
+                            .addCustomFallback(new FontFamily.Builder(arabic).build())
+                            .setSystemFallback("monospace")
+                            .build();
+                } catch (Exception ignored) {
+                }
             }
         }
-        try {
-            return Typeface.createFromAsset(getAssets(), "fonts/courier10.otf");
-        } catch (Exception e) {
-            return Typeface.MONOSPACE;
-        }
+        return out;
+    }
+
+    private Typeface currentFace() {
+        int k = Math.max(0, Math.min(faces.length - 1, prefs.getInt("arFont", 0)));
+        return faces[k];
     }
 
     // ---------------------------------------------------------------- screens
@@ -71,7 +83,7 @@ public class MainActivity extends Activity implements TypewriterView.Host {
         current = null;
         editor = null;
         int paper = TypewriterView.TONES[Math.max(0, Math.min(TypewriterView.TONES.length - 1, prefs.getInt("tone", 0)))];
-        setContentView(new HomeView(this, store.all(), paper, face, new HomeView.Host() {
+        setContentView(new HomeView(this, store.all(), paper, currentFace(), new HomeView.Host() {
             @Override
             public void open(Store.Note n) {
                 openNote(n);
@@ -99,7 +111,7 @@ public class MainActivity extends Activity implements TypewriterView.Host {
 
     private void openNote(Store.Note n) {
         current = n;
-        editor = new TypewriterView(this, sounds, prefs, face, this);
+        editor = new TypewriterView(this, sounds, prefs, faces, this);
         editor.setText(n.text);
         setContentView(editor);
         editor.postDelayed(editor::showKeyboard, 150);

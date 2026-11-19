@@ -69,6 +69,8 @@ public class TypewriterView extends View {
     static final String[] TONE_NAMES = {"Rose paper", "Cream paper", "White paper", "Blue paper"};
     static final float[] SIZES = {13f, 15f, 18f};
     static final String[] SIZE_NAMES = {"Small type", "Medium type", "Large type"};
+    static final String[] ARABIC_FONT_FILES = {"amiri.ttf", "aref_ruqaa.ttf", "amiri_typewriter.ttf"};
+    static final String[] ARABIC_FONT_NAMES = {"Amiri", "Aref Ruqaa", "Amiri Typewriter"};
 
     private static final int INK = 0xFF231E21;
     private static final int TOP_BG = 0xFF0F0E11;
@@ -77,7 +79,9 @@ public class TypewriterView extends View {
     private final Sounds sounds;
     private final SharedPreferences prefs;
     private final float dp, sp;
-    private final Typeface face;
+    private final Typeface[] faces;
+    private Typeface face;
+    private int arFont;
     private final InputMethodManager imm;
     private final int touchSlop;
 
@@ -152,16 +156,18 @@ public class TypewriterView extends View {
     private final RectF r = new RectF();
     private final Path path = new Path();
     private final RectF backHit = new RectF(), shareHit = new RectF();
-    private final RectF[] toolHits = {new RectF(), new RectF(), new RectF(), new RectF(),
+    private final RectF[] toolHits = {new RectF(), new RectF(), new RectF(), new RectF(), new RectF(),
             new RectF(), new RectF(), new RectF()};
     private final NumberFormat nf = NumberFormat.getIntegerInstance();
 
-    public TypewriterView(Context c, Sounds sounds, SharedPreferences prefs, Typeface face, Host host) {
+    public TypewriterView(Context c, Sounds sounds, SharedPreferences prefs, Typeface[] faces, Host host) {
         super(c);
         this.host = host;
         this.sounds = sounds;
         this.prefs = prefs;
-        this.face = face;
+        this.faces = faces;
+        arFont = Math.max(0, Math.min(faces.length - 1, prefs.getInt("arFont", 0)));
+        this.face = faces[arFont];
         dp = getResources().getDisplayMetrics().density;
         sp = dp * getResources().getConfiguration().fontScale;
         imm = (InputMethodManager) c.getSystemService(Context.INPUT_METHOD_SERVICE);
@@ -969,22 +975,22 @@ public class TypewriterView extends View {
     }
 
     private void drawTools(Canvas c, int w, float toolTop) {
-        float pillW = Math.min(w - 24 * dp, 360 * dp);
+        float pillW = Math.min(w - 20 * dp, 400 * dp);
         float l = (w - pillW) / 2f;
         r.set(l, toolTop + 12 * dp, l + pillW, toolTop + 56 * dp);
         fill.setShader(null);
         fill.setColor(lamp ? 0xFF241F22 : 0xFFE9DCE0);
         c.drawRoundRect(r, 22 * dp, 22 * dp, fill);
         float cy = r.centerY();
-        float step = pillW / 7f;
+        float step = pillW / 8f;
         int on = lamp ? 0xFFFFC27A : 0xFF2A2427;
         int off = lamp ? 0xFF7B7276 : 0xFF9C8E93;
         stroke.setShader(null);
         stroke.setStrokeWidth(1.8f * dp);
-        for (int slot = 0; slot < 7; slot++) {
+        for (int slot = 0; slot < 8; slot++) {
             float cx = l + step * slot + step / 2f;
             toolHits[slot].set(cx - step / 2f, r.top - 6 * dp, cx + step / 2f, r.bottom + 6 * dp);
-            if (slot == 0 || slot == 6) { // cursor arrows
+            if (slot == 0 || slot == 7) { // cursor arrows
                 float d = slot == 0 ? -1 : 1;
                 stroke.setColor(arrowHeld == (slot == 0 ? -1 : 1) ? (lamp ? 0xFFFFE2B8 : 0xFF000000) : on);
                 stroke.setStrokeWidth(2.2f * dp);
@@ -1040,6 +1046,12 @@ public class TypewriterView extends View {
                     label.setTextSize((11 + sizeIdx * 3) * sp);
                     c.drawText("Aa", cx, cy + label.getTextSize() * 0.33f, label);
                     break;
+                case 4: // Arabic font, shown in itself
+                    label.setTextAlign(Paint.Align.CENTER);
+                    label.setColor(on);
+                    label.setTextSize(19 * sp);
+                    c.drawText("ع", cx, cy + 6 * dp, label);
+                    break;
                 default: // keyboard
                     stroke.setColor(on);
                     RectF kr = new RectF(cx - 9 * dp, cy - 6 * dp, cx + 9 * dp, cy + 6 * dp);
@@ -1071,7 +1083,7 @@ public class TypewriterView extends View {
                 dragging = false;
                 scrollReturn = false;
                 arrowRepeated = false;
-                if (toolHits[0].contains(downX, downY) || toolHits[6].contains(downX, downY)) {
+                if (toolHits[0].contains(downX, downY) || toolHits[7].contains(downX, downY)) {
                     arrowHeld = toolHits[0].contains(downX, downY) ? -1 : 1;
                     performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
                     moveCaret(arrowHeld);
@@ -1115,7 +1127,7 @@ public class TypewriterView extends View {
             host.onShare();
             return;
         }
-        for (int i = 1; i <= 5; i++) {
+        for (int i = 1; i <= 6; i++) {
             if (toolHits[i].contains(x, y)) {
                 tool(i - 1);
                 return;
@@ -1157,6 +1169,17 @@ public class TypewriterView extends View {
                 animLine = caretLine;
                 headX = -1;
                 showToast(SIZE_NAMES[sizeIdx]);
+                break;
+            case 4: // Arabic font, used on every page
+                arFont = (arFont + 1) % faces.length;
+                ed.putInt("arFont", arFont);
+                face = faces[arFont];
+                ink.setTypeface(face);
+                label.setTypeface(face);
+                applySize();
+                animLine = caretLine;
+                headX = -1;
+                showToast(ARABIC_FONT_NAMES[Math.min(arFont, ARABIC_FONT_NAMES.length - 1)]);
                 break;
             default:
                 if (isKeyboardVisible()) hideKeyboard();
