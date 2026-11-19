@@ -9,7 +9,10 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Typeface;
+import android.graphics.fonts.Font;
+import android.graphics.fonts.FontFamily;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -35,12 +38,31 @@ public class MainActivity extends Activity implements TypewriterView.Host {
         store = new Store(this);
         prefs = getSharedPreferences("platen", MODE_PRIVATE);
         sounds = new Sounds(this);
-        try {
-            face = Typeface.createFromAsset(getAssets(), "fonts/courier10.otf");
-        } catch (Exception e) {
-            face = Typeface.MONOSPACE;
-        }
+        face = loadFace();
         showHome();
+    }
+
+    /**
+     * Courier 10 Pitch for Latin letters, with Amiri Typewriter (an Arabic typewriter face,
+     * SIL Open Font License) as the fallback for Arabic.
+     */
+    private Typeface loadFace() {
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                Font courier = new Font.Builder(getAssets(), "fonts/courier10.otf").build();
+                Font arabic = new Font.Builder(getAssets(), "fonts/amiri_typewriter.ttf").build();
+                return new Typeface.CustomFallbackBuilder(new FontFamily.Builder(courier).build())
+                        .addCustomFallback(new FontFamily.Builder(arabic).build())
+                        .setSystemFallback("monospace")
+                        .build();
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            return Typeface.createFromAsset(getAssets(), "fonts/courier10.otf");
+        } catch (Exception e) {
+            return Typeface.MONOSPACE;
+        }
     }
 
     // ---------------------------------------------------------------- screens
