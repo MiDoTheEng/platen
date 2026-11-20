@@ -1144,6 +1144,7 @@ public class TypewriterView extends View {
                 longPressed = false;
                 pillDrag = text.length() > 0 && pillHit.contains(downX, downY);
                 if (pillDrag) {
+                    pillStartLine = caretLine;
                     performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
                     return true;
                 }
@@ -1158,7 +1159,10 @@ public class TypewriterView extends View {
             case MotionEvent.ACTION_MOVE:
                 float dy = e.getY() - downY;
                 if (pillDrag) {
-                    int p = indexAtX(caretLine, e.getX() - lastTextL);
+                    // sideways moves along the line; up and down move to earlier or later lines
+                    int line = pillStartLine + Math.round(dy / (lineH * 0.8f));
+                    line = Math.max(0, Math.min(cursorLine, line));
+                    int p = indexAtX(line, e.getX() - lastTextL);
                     if (p != caret()) {
                         Selection.setSelection(text, p);
                         onCaretMoved();
@@ -1240,6 +1244,7 @@ public class TypewriterView extends View {
     private boolean longPressed;
     private final RectF pillHit = new RectF();
     private boolean pillDrag;
+    private int pillStartLine;
     private final Runnable longPress = new Runnable() {
         @Override
         public void run() {
