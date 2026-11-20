@@ -843,7 +843,8 @@ public class TypewriterView extends View {
         c.drawCircle(8 * dp, barY, 7 * dp, fill);
         c.drawCircle(w - 8 * dp, barY, 7 * dp, fill);
 
-        // --- carriage pill
+        // --- carriage pill (drag it sideways to move the cursor along the line)
+        pillHit.set(headX - 38 * dp, barY - 24 * dp, headX + 38 * dp, barY + 24 * dp);
         r.set(headX - 25 * dp, barY - 10 * dp, headX + 25 * dp, barY + 10 * dp);
         fill.setColor(lamp ? 0xFF2B2629 : 0xFFF6ECEF);
         if (Build.VERSION.SDK_INT >= 28) fill.setShadowLayer(4 * dp, 0, 1.5f * dp, 0x55000000);
@@ -1141,6 +1142,11 @@ public class TypewriterView extends View {
                 scrollReturn = false;
                 arrowRepeated = false;
                 longPressed = false;
+                pillDrag = text.length() > 0 && pillHit.contains(downX, downY);
+                if (pillDrag) {
+                    performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                    return true;
+                }
                 if (onPaper(downX, downY)) postDelayed(longPress, ViewConfiguration.getLongPressTimeout());
                 if (toolHits[0].contains(downX, downY) || toolHits[7].contains(downX, downY)) {
                     arrowHeld = toolHits[0].contains(downX, downY) ? -1 : 1;
@@ -1151,6 +1157,15 @@ public class TypewriterView extends View {
                 return true;
             case MotionEvent.ACTION_MOVE:
                 float dy = e.getY() - downY;
+                if (pillDrag) {
+                    int p = indexAtX(caretLine, e.getX() - lastTextL);
+                    if (p != caret()) {
+                        Selection.setSelection(text, p);
+                        onCaretMoved();
+                        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                    }
+                    return true;
+                }
                 if (arrowHeld != 0 || longPressed) return true;
                 if (!dragging && (Math.abs(dy) > touchSlop || Math.abs(e.getX() - downX) > touchSlop)) {
                     dragging = true;
@@ -1165,7 +1180,9 @@ public class TypewriterView extends View {
                 return true;
             case MotionEvent.ACTION_UP:
                 removeCallbacks(longPress);
-                if (longPressed) {
+                if (pillDrag) {
+                    pillDrag = false;
+                } else if (longPressed) {
                     longPressed = false;
                 } else if (arrowHeld != 0) {
                     arrowHeld = 0;
@@ -1175,6 +1192,7 @@ public class TypewriterView extends View {
                 dragging = false;
                 return true;
             case MotionEvent.ACTION_CANCEL:
+                pillDrag = false;
                 removeCallbacks(longPress);
                 longPressed = false;
                 arrowHeld = 0;
@@ -1220,6 +1238,8 @@ public class TypewriterView extends View {
     // ================================================================ copy and paste
 
     private boolean longPressed;
+    private final RectF pillHit = new RectF();
+    private boolean pillDrag;
     private final Runnable longPress = new Runnable() {
         @Override
         public void run() {
