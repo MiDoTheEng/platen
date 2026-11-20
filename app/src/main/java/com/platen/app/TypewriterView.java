@@ -818,8 +818,11 @@ public class TypewriterView extends View {
         long st = now - strikeAt;
         float e = st < 60 ? st / 60f : st < 180 ? 1f - (st - 60) / 120f : 0f;
         if (st < 200) anim = true;
-        float restTip = baseCur + 5 * dp;
-        float hitTip = baseCur - fontPx * 0.72f;
+        // The type bar belongs to the machine, not the paper: it stays at the typing line
+        // above the bar even while the page is dragged to read back.
+        float strikeLine = baseCur - scrollBack;
+        float restTip = strikeLine + 5 * dp;
+        float hitTip = strikeLine - fontPx * 0.72f;
         float tip = restTip + (hitTip - restTip) * e;
         stroke.setShader(null);
         stroke.setColor(lamp ? 0xFF3B3337 : 0xFF2A2427);
