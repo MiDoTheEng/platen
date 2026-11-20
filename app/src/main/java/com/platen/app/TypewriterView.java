@@ -1,6 +1,8 @@
 package com.platen.app;
 
 import android.annotation.SuppressLint;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
@@ -14,6 +16,7 @@ import android.graphics.Path;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
 import android.graphics.RadialGradient;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
@@ -29,8 +32,11 @@ import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextPaint;
 import android.text.TextWatcher;
+import android.view.ActionMode;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -306,6 +312,19 @@ public class TypewriterView extends View {
         @Override
         public Editable getEditable() {
             return text;
+        }
+
+        @Override
+        public boolean performContextMenuAction(int id) {
+            if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) {
+                paste();
+                return true;
+            }
+            if (id == android.R.id.copy) {
+                copyAll();
+                return true;
+            }
+            return super.performContextMenuAction(id);
         }
 
         @Override
@@ -1118,6 +1137,8 @@ public class TypewriterView extends View {
                 dragging = false;
                 scrollReturn = false;
                 arrowRepeated = false;
+                longPressed = false;
+                if (onPaper(downX, downY)) postDelayed(longPress, ViewConfiguration.getLongPressTimeout());
                 if (toolHits[0].contains(downX, downY) || toolHits[7].contains(downX, downY)) {
                     arrowHeld = toolHits[0].contains(downX, downY) ? -1 : 1;
                     performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
@@ -1127,8 +1148,11 @@ public class TypewriterView extends View {
                 return true;
             case MotionEvent.ACTION_MOVE:
                 float dy = e.getY() - downY;
-                if (arrowHeld != 0) return true;
-                if (!dragging && Math.abs(dy) > touchSlop) dragging = true;
+                if (arrowHeld != 0 || longPressed) return true;
+                if (!dragging && (Math.abs(dy) > touchSlop || Math.abs(e.getX() - downX) > touchSlop)) {
+                    dragging = true;
+                    removeCallbacks(longPress);
+                }
                 if (dragging) {
                     float max = caretLine * lineH;
                     float min = -(cursorLine - caretLine) * lineH;
@@ -1137,7 +1161,10 @@ public class TypewriterView extends View {
                 }
                 return true;
             case MotionEvent.ACTION_UP:
-                if (arrowHeld != 0) {
+                removeCallbacks(longPress);
+                if (longPressed) {
+                    longPressed = false;
+                } else if (arrowHeld != 0) {
                     arrowHeld = 0;
                     removeCallbacks(repeater);
                     invalidate();
@@ -1145,6 +1172,8 @@ public class TypewriterView extends View {
                 dragging = false;
                 return true;
             case MotionEvent.ACTION_CANCEL:
+                removeCallbacks(longPress);
+                longPressed = false;
                 arrowHeld = 0;
                 removeCallbacks(repeater);
                 dragging = false;
@@ -1169,13 +1198,105 @@ public class TypewriterView extends View {
             }
         }
         // a tap on the typed text puts the cursor there
-        if (text.length() > 0 && y > backHit.bottom && y < toolHits[1].top) {
-            int line = (int) Math.floor((y - (lastBase0 - fontPx * 1.1f)) / lineH);
-            line = Math.max(0, Math.min(cursorLine, line));
-            Selection.setSelection(text, indexAtX(line, x - lastTextL));
-            onCaretMoved();
-        }
+        if (onPaper(x, y)) placeCaretAt(x, y);
         showKeyboard();
+    }
+
+    private boolean onPaper(float x, float y) {
+        return y > backHit.bottom && y < toolHits[1].top - 6 * dp;
+    }
+
+    private void placeCaretAt(float x, float y) {
+        if (text.length() == 0) return;
+        int line = (int) Math.floor((y - (lastBase0 - fontPx * 1.1f)) / lineH);
+        line = Math.max(0, Math.min(cursorLine, line));
+        Selection.setSelection(text, indexAtX(line, x - lastTextL));
+        onCaretMoved();
+    }
+
+    // ================================================================ copy and paste
+
+    private boolean longPressed;
+    private final Runnable longPress = new Runnable() {
+        @Override
+        public void run() {
+            longPressed = true;
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            placeCaretAt(downX, downY);
+            showClipMenu(downX, downY);
+        }
+    };
+
+    /** The usual floating Paste / Copy menu, shown where the page was held. */
+    private void showClipMenu(float x, float y) {
+        final Rect anchor = new Rect((int) x - 2, (int) y - 2, (int) x + 2, (int) y + 2);
+        startActionMode(new ActionMode.Callback2() {
+            @Override
+            public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                if (clipText() != null) menu.add(0, 1, 0, "Paste");
+                if (text.length() > 0) menu.add(0, 2, 1, "Copy all");
+                return menu.size() > 0;
+            }
+
+            @Override
+            public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                return false;
+            }
+
+            @Override
+            public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                if (item.getItemId() == 1) paste();
+                else copyAll();
+                mode.finish();
+                return true;
+            }
+
+            @Override
+            public void onDestroyActionMode(ActionMode mode) {
+            }
+
+            @Override
+            public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
+                outRect.set(anchor);
+            }
+        }, ActionMode.TYPE_FLOATING);
+    }
+
+    private String clipText() {
+        ClipboardManager cm = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null || !cm.hasPrimaryClip()) return null;
+        ClipData cd = cm.getPrimaryClip();
+        if (cd == null || cd.getItemCount() == 0) return null;
+        CharSequence t = cd.getItemAt(0).coerceToText(getContext());
+        if (t == null || t.length() == 0) return null;
+        return t.toString().replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    void paste() {
+        String s = clipText();
+        if (s == null) {
+            showToast("Nothing to paste");
+            return;
+        }
+        int a = Math.min(selStart(), caret()), b = Math.max(selStart(), caret());
+        int room = LIMIT - (text.length() - (b - a));
+        if (room <= 0) {
+            showToast("Page full · 3,000 characters");
+            return;
+        }
+        if (s.length() > room) {
+            int cut = room;
+            if (cut > 0 && Character.isHighSurrogate(s.charAt(cut - 1))) cut--;
+            s = s.substring(0, cut);
+            showToast("Pasted what fits on the page");
+        }
+        typeAtCaret(s);
+    }
+
+    void copyAll() {
+        ClipboardManager cm = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Platen page", text.toString()));
+        showToast("Page copied");
     }
 
     private void tool(int i) {
