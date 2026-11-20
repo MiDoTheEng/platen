@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -14,12 +16,18 @@ import android.graphics.fonts.FontFamily;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 public class MainActivity extends Activity implements TypewriterView.Host {
 
@@ -167,9 +175,10 @@ public class MainActivity extends Activity implements TypewriterView.Host {
         }
         new AlertDialog.Builder(this)
                 .setTitle("Share page")
-                .setItems(new String[]{"As text", "As an image of the page", "Copy text"}, (d, which) -> {
+                .setItems(new String[]{"As text", "As an image of the page", "Save image to gallery", "Copy text"}, (d, which) -> {
                     if (which == 0) shareText();
                     else if (which == 1) shareImage();
+                    else if (which == 2) saveToGallery();
                     else copyText();
                 })
                 .show();
@@ -203,6 +212,45 @@ public class MainActivity extends Activity implements TypewriterView.Host {
             startActivity(Intent.createChooser(i, "Share page"));
         } catch (Exception e) {
             Toast.makeText(this, "Couldn't make the image", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Saves the page image into Pictures/Platen, where the gallery shows it as an album. */
+    private void saveToGallery() {
+        if (Build.VERSION.SDK_INT < 29) {
+            Toast.makeText(this, "Saving needs Android 10 or newer; use Share instead", Toast.LENGTH_LONG).show();
+            return;
+        }
+        Bitmap b = null;
+        Uri item = null;
+        ContentResolver cr = getContentResolver();
+        try {
+            b = editor.renderPage(1080);
+            String name = "Platen " + new SimpleDateFormat("yyyy-MM-dd HH.mm.ss", Locale.US).format(new Date()) + ".png";
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+            v.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+            v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Platen");
+            v.put(MediaStore.Images.Media.IS_PENDING, 1);
+            item = cr.insert(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), v);
+            if (item == null) throw new IllegalStateException("no gallery entry");
+            try (OutputStream os = cr.openOutputStream(item)) {
+                if (os == null || !b.compress(Bitmap.CompressFormat.PNG, 100, os)) throw new IllegalStateException("write failed");
+            }
+            v.clear();
+            v.put(MediaStore.Images.Media.IS_PENDING, 0);
+            cr.update(item, v, null, null);
+            Toast.makeText(this, "Saved to gallery · Pictures/Platen", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            if (item != null) {
+                try {
+                    cr.delete(item, null, null);
+                } catch (Exception ignored) {
+                }
+            }
+            Toast.makeText(this, "Couldn't save the image", Toast.LENGTH_SHORT).show();
+        } finally {
+            if (b != null) b.recycle();
         }
     }
 
