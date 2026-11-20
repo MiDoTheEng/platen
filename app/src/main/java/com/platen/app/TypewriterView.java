@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapShader;
+import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
@@ -278,6 +279,7 @@ public class TypewriterView extends View {
         }
 
         // reach a little past the top so the first lines of a long page are still readable
+        lampOriginY = barY - 12 * dp;
         drawLamp(c, W, H, barY, paperW, Math.max(barY * 1.25f, 260 * dp));
         headX = savedHead;
     }
@@ -830,6 +832,7 @@ public class TypewriterView extends View {
         c.drawLine(headX, barY - 9 * dp, headX, tip, stroke);
         stroke.setStrokeWidth(2.6f * dp);
         c.drawLine(headX - 5 * dp, tip, headX + 5 * dp, tip, stroke);
+        lampOriginY = tip;
 
         // --- platen bar
         float bt = 4.5f * dp;
@@ -968,32 +971,49 @@ public class TypewriterView extends View {
     }
 
     private void drawLamp(Canvas c, int w, int h, float barY, float pw) {
-        drawLamp(c, w, h, barY, pw, Math.max(barY * 0.95f, 220 * dp));
+        // a short, wide beam like a desk lamp on the type bar
+        drawLamp(c, w, h, barY, pw, Math.max(120 * dp, Math.min(barY - 80 * dp, 195 * dp)));
     }
 
+    /**
+     * Lamp mode: the room dims to a soft plum (the page stays readable), and a wide cone of
+     * light with feathered edges opens upward from a small red bulb on top of the type bar.
+     */
     private void drawLamp(Canvas c, int w, int h, float barY, float pw, float reach) {
-        float half = Math.max(pw * 0.95f, w * 0.8f);   // a wide beam (about 100 degrees)
+        float oy = lampOriginY > 0 ? lampOriginY : barY - 12 * dp;
+        float half = reach * 1.3f;
         path.reset();
-        path.moveTo(headX - 14 * dp, barY);
-        path.lineTo(headX - half, barY - reach);
-        path.lineTo(headX + half, barY - reach);
-        path.lineTo(headX + 14 * dp, barY);
+        path.moveTo(headX - 6 * dp, oy);
+        path.lineTo(headX - half, oy - reach);
+        path.lineTo(headX + half, oy - reach);
+        path.lineTo(headX + 6 * dp, oy);
         path.close();
+        BlurMaskFilter soft = new BlurMaskFilter(16 * dp, BlurMaskFilter.Blur.NORMAL);
 
         int layer = c.saveLayer(0, 0, w, h, null);
-        c.drawColor(0xEB0C0B0E);
-        cut.setShader(new RadialGradient(headX, barY, reach,
-                new int[]{0xFF000000, 0xDD000000, 0x00000000}, new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP));
+        c.drawColor(0xC81C1219);
+        cut.setShader(new RadialGradient(headX, oy, reach * 1.08f,
+                new int[]{0xFF000000, 0xF2000000, 0x00000000}, new float[]{0f, 0.6f, 1f}, Shader.TileMode.CLAMP));
+        cut.setMaskFilter(soft);
         c.drawPath(path, cut);
-        cut.setShader(new RadialGradient(headX, barY, 34 * dp, 0xAA000000, 0x00000000, Shader.TileMode.CLAMP));
-        c.drawCircle(headX, barY, 34 * dp, cut);
+        cut.setMaskFilter(null);
+        cut.setShader(new RadialGradient(headX, oy, 28 * dp, 0xCC000000, 0x00000000, Shader.TileMode.CLAMP));
+        c.drawCircle(headX, oy, 28 * dp, cut);
         c.restoreToCount(layer);
 
-        // warm tint inside the cone
-        fill.setShader(new RadialGradient(headX, barY, reach,
-                new int[]{0x55FFB070, 0x22FF9A5C, 0x00FF9A5C}, new float[]{0f, 0.6f, 1f}, Shader.TileMode.CLAMP));
+        // the colour of the light: a soft pink-warm glow, brightest at the bulb
+        fill.setShader(new RadialGradient(headX, oy, reach,
+                new int[]{0x46FFD9CF, 0x1CFFC6B6, 0x00FFC6B6}, new float[]{0f, 0.6f, 1f}, Shader.TileMode.CLAMP));
+        fill.setMaskFilter(soft);
         c.drawPath(path, fill);
+        fill.setMaskFilter(null);
+
+        // the bulb
+        fill.setShader(new RadialGradient(headX, oy - 2 * dp, 10 * dp, 0xBBFF5A48, 0x00FF5A48, Shader.TileMode.CLAMP));
+        c.drawCircle(headX, oy - 2 * dp, 10 * dp, fill);
         fill.setShader(null);
+        fill.setColor(0xFFFF4A3A);
+        c.drawCircle(headX, oy - 2.5f * dp, 2.3f * dp, fill);
     }
 
     private void drawTopBar(Canvas c, int w, float topH) {
@@ -1037,12 +1057,12 @@ public class TypewriterView extends View {
         float l = (w - pillW) / 2f;
         r.set(l, toolTop + 12 * dp, l + pillW, toolTop + 56 * dp);
         fill.setShader(null);
-        fill.setColor(lamp ? 0xFF241F22 : 0xFFE9DCE0);
+        fill.setColor(lamp ? 0xFF5E4F59 : 0xFFE9DCE0);
         c.drawRoundRect(r, 22 * dp, 22 * dp, fill);
         float cy = r.centerY();
         float step = pillW / 8f;
-        int on = lamp ? 0xFFFFC27A : 0xFF2A2427;
-        int off = lamp ? 0xFF7B7276 : 0xFF9C8E93;
+        int on = lamp ? 0xFF221A20 : 0xFF2A2427;
+        int off = lamp ? 0xFF8C7A86 : 0xFF9C8E93;
         stroke.setShader(null);
         stroke.setStrokeWidth(1.8f * dp);
         for (int slot = 0; slot < 8; slot++) {
@@ -1050,7 +1070,7 @@ public class TypewriterView extends View {
             toolHits[slot].set(cx - step / 2f, r.top - 6 * dp, cx + step / 2f, r.bottom + 6 * dp);
             if (slot == 0 || slot == 7) { // cursor arrows
                 float d = slot == 0 ? -1 : 1;
-                stroke.setColor(arrowHeld == (slot == 0 ? -1 : 1) ? (lamp ? 0xFFFFE2B8 : 0xFF000000) : on);
+                stroke.setColor(arrowHeld == (slot == 0 ? -1 : 1) ? 0xFF000000 : on);
                 stroke.setStrokeWidth(2.2f * dp);
                 c.drawLine(cx + 3 * dp * d, cy - 7 * dp, cx - 3 * dp * d, cy, stroke);
                 c.drawLine(cx - 3 * dp * d, cy, cx + 3 * dp * d, cy + 7 * dp, stroke);
@@ -1244,6 +1264,7 @@ public class TypewriterView extends View {
     private boolean longPressed;
     private final RectF pillHit = new RectF();
     private boolean pillDrag;
+    private float lampOriginY = -1;
     private int pillStartLine;
     private final Runnable longPress = new Runnable() {
         @Override
