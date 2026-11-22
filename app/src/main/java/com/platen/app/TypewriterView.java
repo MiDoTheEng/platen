@@ -124,6 +124,14 @@ public class TypewriterView extends View {
     private static final class Run {
         int s, e, line;
         float x;
+        boolean rtl;
+    }
+
+    /** An imported display font: draw English whole words too, so its joined letters render. */
+    private boolean runText;
+
+    private void readRunText() {
+        runText = prefs.getInt("latin", 0) == 1 && prefs.getString("customFontName", null) != null;
     }
     private float lastBase0, lastTextL;
     private int pendIns, pendRem;
@@ -186,6 +194,7 @@ public class TypewriterView extends View {
         imm = (InputMethodManager) c.getSystemService(Context.INPUT_METHOD_SERVICE);
         touchSlop = ViewConfiguration.get(c).getScaledTouchSlop();
         kbRtl = detectKbRtl();
+        readRunText();
 
         lamp = prefs.getBoolean("lamp", false);
         sound = prefs.getBoolean("sound", true);
@@ -658,7 +667,31 @@ public class TypewriterView extends View {
                 int k = order[v];
                 int rs = ls + bidi.getRunStart(k), re = ls + bidi.getRunLimit(k);
                 boolean rtl = (bidi.getRunLevel(k) & 1) == 1;
-                if (!rtl) {
+                if (!rtl && runText) {
+                    // shaped as a whole so ligatures and joined letters keep their real widths
+                    float rw = ink.getRunAdvance(s, rs, re, rs, re, false, re);
+                    for (int i = rs; i < re; i++) {
+                        rtlOf[i] = false;
+                        if (i > rs && Character.isLowSurrogate(s.charAt(i))) {
+                            xOf[i] = xOf[i - 1];
+                            wOf[i] = 0;
+                            continue;
+                        }
+                        int j = (Character.isHighSurrogate(s.charAt(i)) && i + 1 < re) ? i + 2 : i + 1;
+                        float a0 = ink.getRunAdvance(s, rs, re, rs, re, false, i);
+                        float a1 = ink.getRunAdvance(s, rs, re, rs, re, false, j);
+                        xOf[i] = x + a0;
+                        wOf[i] = a1 - a0;
+                    }
+                    Run run = new Run();
+                    run.s = rs;
+                    run.e = re;
+                    run.line = L;
+                    run.x = x;
+                    run.rtl = false;
+                    runs.add(run);
+                    x += rw;
+                } else if (!rtl) {
                     if (tmpW.length < re - rs) tmpW = new float[re - rs + 32];
                     ink.getTextWidths(s, rs, re, tmpW);
                     for (int i = rs; i < re; i++) {
@@ -687,6 +720,7 @@ public class TypewriterView extends View {
                     run.e = re;
                     run.line = L;
                     run.x = x;
+                    run.rtl = true;
                     runs.add(run);
                     x += rw;
                 }
@@ -910,7 +944,7 @@ public class TypewriterView extends View {
         // left-to-right letters, each stamped on its own
         for (int i = 0; i < n; i++) {
             char ch = text.charAt(i);
-            if (ch == '\n' || ch == ' ' || Character.isLowSurrogate(ch) || rtlOf[i]) continue;
+            if (ch == '\n' || ch == ' ' || Character.isLowSurrogate(ch) || rtlOf[i] || runText) continue;
             float y = base0 + lineOf[i] * lineH;
             if (y < minY || y > maxY) continue;
             int end = (Character.isHighSurrogate(ch) && i + 1 < n) ? i + 2 : i + 1;
@@ -941,7 +975,7 @@ public class TypewriterView extends View {
             c.restore();
             if (s != null && s.splat && k >= 1f) drawSplat(c, x, y, s.seed);
         }
-        // right-to-left (Arabic) runs, drawn whole so the letters join
+        // runs drawn whole so letters join: Arabic always, English with an imported font
         for (Run run : runs) {
             float y = base0 + run.line * lineH;
             if (y < minY || y > maxY) continue;
@@ -955,7 +989,7 @@ public class TypewriterView extends View {
             Stamp s0 = run.s < stamps.size() ? stamps.get(run.s) : null;
             float alpha = s0 == null ? 1f : 0.85f + 0.15f * s0.alpha;
             ink.setAlpha((int) (255 * alpha * (0.6f + 0.4f * k)));
-            c.drawTextRun(text, run.s, run.e, run.s, run.e, left + run.x, y + (s0 == null ? 0 : s0.dy * 0.5f), true, ink);
+            c.drawTextRun(text, run.s, run.e, run.s, run.e, left + run.x, y + (s0 == null ? 0 : s0.dy * 0.5f), run.rtl, ink);
         }
         ink.clearShadowLayer();
         ink.setAlpha(255);
@@ -1434,6 +1468,7 @@ public class TypewriterView extends View {
 
     /** New typefaces (after the English font changed); keeps the chosen Arabic font. */
     void setFaces(Typeface[] f) {
+        readRunText();
         faces = f;
         arFont = Math.max(0, Math.min(faces.length - 1, arFont));
         face = faces[arFont];
