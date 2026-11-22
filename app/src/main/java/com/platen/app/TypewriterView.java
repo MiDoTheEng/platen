@@ -68,6 +68,12 @@ public class TypewriterView extends View {
         void onBack();
 
         void onShare();
+
+        /** The English font was switched; rebuild the typefaces. */
+        void onFontsChanged();
+
+        /** Let the person pick a font file of their own. */
+        void onImportFont();
     }
 
     static final int LIMIT = 3000;
@@ -86,7 +92,7 @@ public class TypewriterView extends View {
     private final Sounds sounds;
     private final SharedPreferences prefs;
     private final float dp, sp;
-    private final Typeface[] faces;
+    private Typeface[] faces;
     private Typeface face;
     private int arFont;
     private final InputMethodManager imm;
@@ -1368,12 +1374,7 @@ public class TypewriterView extends View {
                 showToast(TONE_NAMES[tone]);
                 break;
             case 3:
-                sizeIdx = (sizeIdx + 1) % SIZES.length;
-                ed.putInt("size", sizeIdx);
-                applySize();
-                animLine = caretLine;
-                headX = -1;
-                showToast(SIZE_NAMES[sizeIdx]);
+                showTypeMenu();
                 break;
             case 4: // Arabic font, used on every page
                 arFont = (arFont + 1) % faces.length;
@@ -1392,6 +1393,55 @@ public class TypewriterView extends View {
                 break;
         }
         ed.apply();
+        invalidate();
+    }
+
+    /** Type size, and which font the English letters use (typewriter or one the person imported). */
+    private void showTypeMenu() {
+        final String custom = prefs.getString("customFontName", null);
+        final int latin = custom == null ? 0 : prefs.getInt("latin", 0);
+        java.util.List<String> items = new java.util.ArrayList<>();
+        for (int k = 0; k < SIZES.length; k++) items.add((k == sizeIdx ? "✓  " : "     ") + SIZE_NAMES[k]);
+        items.add((latin == 0 ? "✓  " : "     ") + "English font: Typewriter");
+        if (custom != null) items.add((latin == 1 ? "✓  " : "     ") + "English font: " + custom);
+        items.add("     Import a font file…");
+        final int nSizes = SIZES.length;
+        new android.app.AlertDialog.Builder(getContext())
+                .setTitle("Type")
+                .setItems(items.toArray(new String[0]), (d, which) -> {
+                    if (which < nSizes) {
+                        sizeIdx = which;
+                        prefs.edit().putInt("size", sizeIdx).apply();
+                        applySize();
+                        animLine = caretLine;
+                        headX = -1;
+                        showToast(SIZE_NAMES[sizeIdx]);
+                    } else if (which == nSizes) {
+                        prefs.edit().putInt("latin", 0).apply();
+                        host.onFontsChanged();
+                        showToast("Typewriter font");
+                    } else if (custom != null && which == nSizes + 1) {
+                        prefs.edit().putInt("latin", 1).apply();
+                        host.onFontsChanged();
+                        showToast(custom);
+                    } else {
+                        host.onImportFont();
+                    }
+                    invalidate();
+                })
+                .show();
+    }
+
+    /** New typefaces (after the English font changed); keeps the chosen Arabic font. */
+    void setFaces(Typeface[] f) {
+        faces = f;
+        arFont = Math.max(0, Math.min(faces.length - 1, arFont));
+        face = faces[arFont];
+        ink.setTypeface(face);
+        label.setTypeface(face);
+        applySize();
+        animLine = caretLine;
+        headX = -1;
         invalidate();
     }
 

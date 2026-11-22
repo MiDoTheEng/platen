@@ -57,9 +57,13 @@ public class MainActivity extends Activity implements TypewriterView.Host {
     private Typeface[] loadFaces() {
         String[] files = TypewriterView.ARABIC_FONT_FILES;
         Typeface[] out = new Typeface[files.length];
+        File custom = customFontFile();
+        boolean useCustom = prefs.getInt("latin", 0) == 1 && custom.exists()
+                && prefs.getString("customFontName", null) != null;
         Typeface plain;
         try {
-            plain = Typeface.createFromAsset(getAssets(), "fonts/courier10.otf");
+            plain = useCustom ? Typeface.createFromFile(custom)
+                    : Typeface.createFromAsset(getAssets(), "fonts/courier10.otf");
         } catch (Exception e) {
             plain = Typeface.MONOSPACE;
         }
@@ -67,9 +71,10 @@ public class MainActivity extends Activity implements TypewriterView.Host {
             out[k] = plain;
             if (Build.VERSION.SDK_INT >= 29) {
                 try {
-                    Font courier = new Font.Builder(getAssets(), "fonts/courier10.otf").build();
+                    Font latin = useCustom ? new Font.Builder(custom).build()
+                            : new Font.Builder(getAssets(), "fonts/courier10.otf").build();
                     Font arabic = new Font.Builder(getAssets(), "fonts/" + files[k]).build();
-                    out[k] = new Typeface.CustomFallbackBuilder(new FontFamily.Builder(courier).build())
+                    out[k] = new Typeface.CustomFallbackBuilder(new FontFamily.Builder(latin).build())
                             .addCustomFallback(new FontFamily.Builder(arabic).build())
                             .setSystemFallback("monospace")
                             .build();
@@ -78,6 +83,109 @@ public class MainActivity extends Activity implements TypewriterView.Host {
             }
         }
         return out;
+    }
+
+    private File customFontFile() {
+        File d = new File(getFilesDir(), "fonts");
+        //noinspection ResultOfMethodCallIgnored
+        d.mkdirs();
+        return new File(d, "custom-font");
+    }
+
+    // ---------------------------------------------------------------- importing a font
+
+    private static final int PICK_FONT = 42;
+
+    @Override
+    public void onFontsChanged() {
+        faces = loadFaces();
+        if (editor != null) editor.setFaces(faces);
+    }
+
+    @Override
+    public void onImportFont() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        try {
+            startActivityForResult(i, PICK_FONT);
+        } catch (Exception e) {
+            Toast.makeText(this, "No file picker found", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != PICK_FONT || res != RESULT_OK || data == null || data.getData() == null) return;
+        importFont(data.getData());
+    }
+
+    /** Copies a .ttf / .otf (or the first one inside a .zip, as font sites hand them out) into the app. */
+    private void importFont(Uri uri) {
+        String name = "Imported font";
+        try (android.database.Cursor cur = getContentResolver().query(uri,
+                new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cur != null && cur.moveToFirst() && cur.getString(0) != null) name = cur.getString(0);
+        } catch (Exception ignored) {
+        }
+        File tmp = new File(getCacheDir(), "font-import");
+        try {
+            byte[] head = new byte[4];
+            try (java.io.InputStream in = getContentResolver().openInputStream(uri)) {
+                if (in == null) throw new IllegalStateException();
+                int got = in.read(head);
+                if (got < 4) throw new IllegalStateException();
+            }
+            boolean zip = head[0] == 'P' && head[1] == 'K';
+            try (java.io.InputStream in = getContentResolver().openInputStream(uri);
+                 FileOutputStream os = new FileOutputStream(tmp)) {
+                if (in == null) throw new IllegalStateException();
+                if (zip) {
+                    java.util.zip.ZipInputStream z = new java.util.zip.ZipInputStream(in);
+                    java.util.zip.ZipEntry e;
+                    boolean found = false;
+                    while ((e = z.getNextEntry()) != null) {
+                        String n = e.getName().toLowerCase(Locale.ROOT);
+                        if (e.isDirectory() || n.contains("__macosx")) continue;
+                        if (n.endsWith(".otf") || n.endsWith(".ttf")) {
+                            copy(z, os);
+                            String base = e.getName();
+                            int slash = base.lastIndexOf('/');
+                            name = slash >= 0 ? base.substring(slash + 1) : base;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) throw new IllegalStateException("no font in zip");
+                } else {
+                    copy(in, os);
+                }
+            }
+            // make sure it really is a font before using it
+            if (Build.VERSION.SDK_INT >= 29) new Font.Builder(tmp).build();
+            else if (Typeface.createFromFile(tmp) == null) throw new IllegalStateException();
+
+            File dst = customFontFile();
+            //noinspection ResultOfMethodCallIgnored
+            dst.delete();
+            if (!tmp.renameTo(dst)) throw new IllegalStateException();
+            int dot = name.lastIndexOf('.');
+            if (dot > 0) name = name.substring(0, dot);
+            prefs.edit().putString("customFontName", name).putInt("latin", 1).apply();
+            onFontsChanged();
+            Toast.makeText(this, "English text now uses " + name, Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
+            Toast.makeText(this, "That file isn't a font Platen can use (.ttf, .otf or a .zip with one)", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private static void copy(java.io.InputStream in, java.io.OutputStream os) throws java.io.IOException {
+        byte[] buf = new byte[16384];
+        int r;
+        while ((r = in.read(buf)) > 0) os.write(buf, 0, r);
     }
 
     private Typeface currentFace() {
