@@ -268,6 +268,42 @@ public class TypewriterView extends View {
         return b;
     }
 
+    /**
+     * The page fitted into a W×H picture (a wallpaper or a social-media post): the typed page
+     * is centred inside the safe area and the rest is the same paper, lit the same way.
+     */
+    Bitmap renderFramed(int W, int H, float topSafe, float bottomSafe) {
+        float side = 0.06f;
+        int boxW = Math.max(200, Math.round(W * (1 - 2 * side)));
+        float boxH = H * (1 - topSafe - bottomSafe);
+        Bitmap page = renderPage(boxW);
+        float sc = Math.min(1f, boxH / page.getHeight());
+        Bitmap out = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        int paper = TONES[tone];
+        if (lamp) {
+            // the same dim plum the lamp leaves outside its beam
+            float k = 200f / 255f;
+            int bg = Color.rgb(
+                    Math.round(Color.red(paper) * (1 - k) + 0x1C * k),
+                    Math.round(Color.green(paper) * (1 - k) + 0x12 * k),
+                    Math.round(Color.blue(paper) * (1 - k) + 0x19 * k));
+            c.drawColor(bg);
+        } else {
+            c.drawColor(paper);
+            grainMatrix.reset();
+            grainPaint.getShader().setLocalMatrix(grainMatrix);
+            c.drawRect(0, 0, W, H, grainPaint);
+        }
+        float dw = page.getWidth() * sc, dh = page.getHeight() * sc;
+        float left = (W - dw) / 2f;
+        float top = H * topSafe + (boxH - dh) / 2f;
+        Paint smooth = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        c.drawBitmap(page, null, new RectF(left, top, left + dw, top + dh), smooth);
+        page.recycle();
+        return out;
+    }
+
     /** Lamp mode in a shared image: the bar and carriage under the last line, lit from there. */
     private void drawLampOnImage(Canvas c, float base0, float contentH) {
         float barY = Math.min(contentH - 14 * dp, base0 + cursorLine * lineH + 18 * dp);

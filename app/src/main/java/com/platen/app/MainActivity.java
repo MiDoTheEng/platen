@@ -285,11 +285,54 @@ public class MainActivity extends Activity implements TypewriterView.Host {
                 .setTitle("Share page")
                 .setItems(new String[]{"As text", "As an image of the page", "Save image to gallery", "Copy text"}, (d, which) -> {
                     if (which == 0) shareText();
-                    else if (which == 1) shareImage();
-                    else if (which == 2) saveToGallery();
+                    else if (which == 1) pickSize(this::shareImage);
+                    else if (which == 2) pickSize(this::saveToGallery);
                     else copyText();
                 })
                 .show();
+    }
+
+    // ---------------------------------------------------------------- image sizes
+
+    private static final String[] SIZE_LABELS = {
+            "Full page (as typed)",
+            "This phone · wallpaper",
+            "Tablet · MatePad Mini (1600×2560)",
+            "Instagram post · 4:5",
+            "Square · 1:1",
+            "Story / Status · 9:16",
+            "X post · 16:9",
+    };
+
+    private void pickSize(java.util.function.IntConsumer then) {
+        new AlertDialog.Builder(this)
+                .setTitle("Picture size")
+                .setItems(SIZE_LABELS, (d, which) -> then.accept(which))
+                .show();
+    }
+
+    /** The page as a picture at the chosen size: the page is centred and the rest is the same paper. */
+    private Bitmap render(int size) {
+        switch (size) {
+            case 1: { // this phone's own screen, leaving room for the lock-screen clock
+                android.util.DisplayMetrics m = new android.util.DisplayMetrics();
+                getWindowManager().getDefaultDisplay().getRealMetrics(m);
+                int w = Math.min(m.widthPixels, m.heightPixels), h = Math.max(m.widthPixels, m.heightPixels);
+                return editor.renderFramed(w, h, 0.27f, 0.12f);
+            }
+            case 2:
+                return editor.renderFramed(1600, 2560, 0.20f, 0.10f);
+            case 3:
+                return editor.renderFramed(1080, 1350, 0.07f, 0.07f);
+            case 4:
+                return editor.renderFramed(1080, 1080, 0.07f, 0.07f);
+            case 5: // stories keep clear of the name bar at the top and the reply box at the bottom
+                return editor.renderFramed(1080, 1920, 0.14f, 0.18f);
+            case 6:
+                return editor.renderFramed(1600, 900, 0.07f, 0.07f);
+            default:
+                return editor.renderPage(1080);
+        }
     }
 
     private void shareText() {
@@ -299,9 +342,9 @@ public class MainActivity extends Activity implements TypewriterView.Host {
         startActivity(Intent.createChooser(i, "Share page"));
     }
 
-    private void shareImage() {
+    private void shareImage(int size) {
         try {
-            Bitmap b = editor.renderPage(1080);
+            Bitmap b = render(size);
             File dir = ShareProvider.dir(this);
             File[] old = dir.listFiles();
             if (old != null) for (File f : old) //noinspection ResultOfMethodCallIgnored
@@ -324,7 +367,7 @@ public class MainActivity extends Activity implements TypewriterView.Host {
     }
 
     /** Saves the page image into Pictures/Platen, where the gallery shows it as an album. */
-    private void saveToGallery() {
+    private void saveToGallery(int size) {
         if (Build.VERSION.SDK_INT < 29) {
             Toast.makeText(this, "Saving needs Android 10 or newer; use Share instead", Toast.LENGTH_LONG).show();
             return;
@@ -333,7 +376,7 @@ public class MainActivity extends Activity implements TypewriterView.Host {
         Uri item = null;
         ContentResolver cr = getContentResolver();
         try {
-            b = editor.renderPage(1080);
+            b = render(size);
             String name = "Platen " + new SimpleDateFormat("yyyy-MM-dd HH.mm.ss", Locale.US).format(new Date()) + ".png";
             ContentValues v = new ContentValues();
             v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
