@@ -884,10 +884,10 @@ public class TypewriterView extends View {
 
         // --- cursor: a blinking underline under the cell where the next letter lands
         float baseCur = base0 + caretLine * lineH;
-        boolean blinkOn = ((now - caretMovedAt) / 530) % 2 == 0;
+        boolean blinkOn = true; // steady, no blinking
         if (blinkOn) {
             fill.setShader(null);
-            fill.setColor(0xFFB0475F);
+            fill.setColor(0xFF000000);
             float cx0 = textL + (caretRtl ? caretX - charW : caretX);
             c.drawRect(cx0 + 1 * dp, baseCur + 3 * dp, cx0 + charW - 1 * dp, baseCur + 4.6f * dp, fill);
         }

@@ -10,8 +10,8 @@ android {
         applicationId 'com.platen.app'
         minSdk 26
         targetSdk 34
-        versionCode 16
-        versionName '1.15'
+        versionCode 17
+        versionName '1.16'
     }
 
     // A fixed key kept in the project, so every new build installs over the previous one.
